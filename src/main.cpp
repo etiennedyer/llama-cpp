@@ -1,0 +1,111 @@
+#include "model.h"
+#include <iomanip>
+#include <iostream>
+#include <string>
+#include <random>
+
+// for debug / tiny mode, fills a tensor with noise
+static void fill_tensor(Tensor& t, std::mt19937& rng, float scale = 0.02f) {
+    std::normal_distribution<float> dist(0.0f, scale);
+    for (float& v : t.data) v = dist(rng);
+}
+
+// fills all tensors with random weights for tiny mode
+static void init_random_weights(Llama& model) {
+    std::mt19937 rng(123);
+    fill_tensor(model.token_embedding_table, rng);
+    fill_tensor(model.rms_final_weight, rng);
+    fill_tensor(model.w_cls, rng);
+    for (auto& layer : model.layers) {
+        fill_tensor(layer.wq, rng);
+        fill_tensor(layer.wk, rng);
+        fill_tensor(layer.wv, rng);
+        fill_tensor(layer.wo, rng);
+        fill_tensor(layer.w1, rng);
+        fill_tensor(layer.w2, rng);
+        fill_tensor(layer.w3, rng);
+        fill_tensor(layer.rms_att_weight, rng);
+        fill_tensor(layer.rms_ffn_weight, rng);
+    }
+}
+
+int main(int argc, char** argv) {
+
+    bool use_tiny = false;
+
+    // parse arg for --tiny flag
+    for (int i = 1; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--tiny") {
+            use_tiny = true;
+        }
+    }
+
+    try { 
+        if (use_tiny) { 
+            LlamaConfig conf( // configure custom small dimensions
+                64,  // dim 
+                128, // hidden_dim 
+                2,   // n_layers 
+                4,   // n_heads
+                2,   // n_kv_heads
+                256, // vocab_size
+                32); // seq_len 
+
+            Llama model(conf);
+            KVCache cache(conf);
+            init_random_weights(model);
+
+            int token = 1;
+            int pos = 0;
+            Tensor logits = model.forward(token, pos, cache);
+
+            std::cout << "Logits size: " << logits.data.size() << std::endl;
+            std::cout << "First logits: ";
+            int to_print = 8;
+            if (static_cast<size_t>(to_print) > logits.data.size()) {
+                to_print = static_cast<int>(logits.data.size());
+            }
+            for (int i = 0; i < to_print; ++i) {
+                std::cout << std::fixed << std::setprecision(6) << logits.data[i];
+                if (i + 1 < to_print) {
+                    std::cout << ", ";
+                }
+            }
+            std::cout << std::endl;
+        } else {
+
+        std::string weights_path = "/home/etienne/llama/weights/model.safetensors.index.json";
+
+        LlamaConfig conf;
+        Llama model(conf);
+        KVCache cache(conf);
+
+        std::cout << "Loading weights from: " << weights_path << std::endl;
+        model.load_safetensors(weights_path);
+
+        int token = 1;
+        int pos = 0;
+        Tensor logits = model.forward(token, pos, cache);
+
+        std::cout << "Logits size: " << logits.data.size() << std::endl;
+        std::cout << "First logits: ";
+        int to_print = 8;
+        if (static_cast<size_t>(to_print) > logits.data.size()) {
+            to_print = static_cast<int>(logits.data.size());
+        }
+        for (int i = 0; i < to_print; ++i) {
+            std::cout << std::fixed << std::setprecision(6) << logits.data[i];
+            if (i + 1 < to_print) {
+                std::cout << ", ";
+            }
+        }
+        std::cout << std::endl;
+    } 
+
+    return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "CRITICAL ERROR: " << e.what() << std::endl;
+        return 1;
+    }
+}
