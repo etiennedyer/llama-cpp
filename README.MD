@@ -1,4 +1,4 @@
-*Llama-3 8B in C++*
+**Llama-3 8B in C++**
 
 This is my implementation of Llama-3 in C++. It's part 1 of what I intend to be a 3 part series, covering a naive C++ implementation, CPU optimization (blocked GEMM, vectorization, multithreading...), and GPU optimization (tiled GEMM/vectorized matmul kernel, flashattention kernel...).
 
