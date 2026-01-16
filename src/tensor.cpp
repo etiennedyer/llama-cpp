@@ -25,7 +25,7 @@ Tensor matmul(const Tensor& A, const Tensor& B) {
     }
     
     // Validation: Are we multiplying compatible shapes?
-    if (A.shape.size() == 2 & B.shape.size() == 2) { // a 2D tensor is a matrix. A.shape will return the dimension of A (e.g., 3x4 = (3, 4))
+    if (A.shape.size() == 2 && B.shape.size() == 2) { // a 2D tensor is a matrix. A.shape will return the dimension of A (e.g., 3x4 = (3, 4))
 
         // make sure 2x2 matmul is valid
         if (A.shape[1] != B.shape[0]) {

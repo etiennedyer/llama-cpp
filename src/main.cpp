@@ -33,24 +33,30 @@ int main(int argc, char** argv) {
 
     bool use_tiny = false;
 
+    // default to 1 iteration
+    int iters = 1;
+
     // parse arg for --tiny flag
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--tiny") {
             use_tiny = true;
+            if (i + 1 < argc && std::isdigit(argv[i + 1][0])) {
+            iters = std::stoi(argv[++i]);
+            }
         }
     }
 
     try { 
         if (use_tiny) { 
             LlamaConfig conf( // configure custom small dimensions
-                64,  // dim 
-                128, // hidden_dim 
-                2,   // n_layers 
-                4,   // n_heads
-                2,   // n_kv_heads
-                256, // vocab_size
-                32); // seq_len 
+                512,  // dim 
+                2048, // hidden_dim 
+                6,   // n_layers 
+                8,   // n_heads
+                4,   // n_kv_heads
+                4096, // vocab_size
+                128); // seq_len 
 
             Llama model(conf);
             KVCache cache(conf);
@@ -58,8 +64,17 @@ int main(int argc, char** argv) {
 
             int token = 1;
             int pos = 0;
-            Tensor logits = model.forward(token, pos, cache);
 
+
+            // intialize logits
+            Tensor logits({conf.vocab_size});
+
+            // loop for {iters} iterations
+            for (int i = 0; i < iters; ++i) {
+                logits = model.forward(token, pos, cache);
+            }
+            
+            std::cout << "Iters: " << iters << std::endl;
             std::cout << "Logits size: " << logits.data.size() << std::endl;
             std::cout << "First logits: ";
             int to_print = 8;
@@ -75,7 +90,7 @@ int main(int argc, char** argv) {
             std::cout << std::endl;
         } else {
 
-        std::string weights_path = "/home/etienne/llama/weights/model.safetensors.index.json";
+        std::string weights_path = "./llama/weights/model.safetensors.index.json";
 
         LlamaConfig conf;
         Llama model(conf);

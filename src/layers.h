@@ -58,10 +58,6 @@ struct KVCache {
     int current_pos; 
 
     KVCache(const LlamaConfig& conf);
-    
-    // Helper to view the cache for a specific layer
-    // Returns a "Window" into the giant tensor for just one layer
-    void get_layer_cache(int layer_idx, Tensor& k_out, Tensor& v_out);
 };
 
 // Transformer block

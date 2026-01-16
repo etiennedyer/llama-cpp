@@ -1,1 +1,4 @@
-/weights/
+/weights/*
+!/weights/.gitkeep
+
+llama_main

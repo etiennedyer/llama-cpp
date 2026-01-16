@@ -41,8 +41,8 @@ void RoPE::forward(Tensor& q, Tensor& k, int pos) const {
     const float* cos_table = &freqs_cos.data[pos * (freqs_cos.shape[1])];
     const float* sin_table = &freqs_sin.data[pos * (freqs_sin.shape[1])];
 
-    // Apply to Query
-    // We iterate in steps of 2 because we process pairs (complex numbers)
+    // apply to Query
+    // We iterate in steps of 2 because we process pairs
     for (int i = 0; i < q.data.size(); i += 2) {
         
         // Find which "pair index" we are at within the rotation table.
@@ -61,7 +61,7 @@ void RoPE::forward(Tensor& q, Tensor& k, int pos) const {
         q.data[i+1] = x * s + y * c;
     }
 
-    // 2. Apply to Key,same logic
+    // apply to Key, same logic
     for (int i = 0; i < k.data.size(); i += 2) {
         int head_dim_idx = (i / 2) % freqs_cos.shape[1];
         
@@ -81,10 +81,6 @@ KVCache::KVCache(const LlamaConfig& conf) :
     k_cache({conf.n_layers, conf.seq_len, conf.n_kv_heads, conf.head_dim}), 
     v_cache({conf.n_layers, conf.seq_len, conf.n_kv_heads, conf.head_dim}) { };
 
-void KVCache::get_layer_cache(int layer_idx, Tensor& k_out, Tensor& v_out){
-    // retrieves cache
-};
-
 // attention with raw pointers
 // manually iterates over memory because we can't use Tensor objects here.
 Tensor attention_impl(Tensor& Q, float* k_cache_layer, float* v_cache_layer, int pos, const LlamaConfig& conf) {
@@ -94,25 +90,25 @@ Tensor attention_impl(Tensor& Q, float* k_cache_layer, float* v_cache_layer, int
     int n_kv_heads = conf.n_kv_heads;
     int head_stride = n_kv_heads * dim; // How far to jump to get to the next token's data in the cache
     
-    // 1. Prepare Output Container (Same shape as Q: [n_heads * head_dim])
+    // output container -- same shape as Q, [n_heads * head_dim]
     Tensor output({n_heads * dim}); 
     std::fill(output.data.begin(), output.data.end(), 0.0f); // Initialize with 0
 
-    // 2. Iterate over every Query Head
+    // iterate over every Query head
     for (int h = 0; h < n_heads; h++) {
         
-        // GQA Logic: Which KV head does this Query head use?
+        // GQA: which KV head does this query head use?
         // e.g. If 32 Q-heads and 8 KV-heads, heads 0-3 all use KV-head 0.
         int kv_head = h / (n_heads / n_kv_heads);
 
         // Get pointer to the current Q vector
         float* q_vec = Q.data.data() + (h * dim);
 
-        // --- Step A: Calculate Attention Scores (Q @ K.T) ---
+        // calculate Attention Scores (Q @ K.T)
         std::vector<float> scores(pos + 1);
         
         for (int t = 0; t <= pos; t++) {
-            // Pointer Math: Find K vector for token 't', head 'kv_head'
+            // find K vector for token 't', head 'kv_head'
             // Formula: Start + (Time Step Offset) + (Head Offset)
             float* k_vec = k_cache_layer + (t * head_stride) + (kv_head * dim);
             
@@ -146,7 +142,7 @@ Tensor attention_impl(Tensor& Q, float* k_cache_layer, float* v_cache_layer, int
         float* out_vec = output.data.data() + (h * dim);
 
         for (int t = 0; t <= pos; t++) {
-            // Pointer Math: Find V vector for token 't'
+            // find V vector for token 't'
             float* v_vec = v_cache_layer + (t * head_stride) + (kv_head * dim);
             float weight = scores[t];
 
@@ -190,9 +186,7 @@ TransformerBlock::TransformerBlock(const LlamaConfig& conf) :
     // Just a 1D vector scaling each dimension
     rms_att_weight({conf.dim}),
     rms_ffn_weight({conf.dim}) 
-{
-
-}
+    { }
 
 Tensor TransformerBlock::forward(Tensor x, int pos, const LlamaConfig& conf, const RoPE& rope, KVCache& cache, int layer_idx) {
 
