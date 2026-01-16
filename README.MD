@@ -1,6 +1,8 @@
-This is my implementation of Llama-3 in C++. It's part 1 of what I intend to be a 3 part series, covering a naive C++ implementation, optimization for CPU (blocked GEMM, vectorization, multithreading...), and optimization for GPU (GEMM/vectorized matmul kernel, flashattention kernel...)
+*Llama-3 8B in C++*
 
-You can get the real weights [here](https://huggingface.co/meta-llama/Meta-Llama-3-8B) (about 15gb, BF16 safetensors, model-00001 to model-00004 + model.safetensors.index.json, behind an auth wall), and download them to ./weights/, or just run a small version with the --tiny flag.
+This is my implementation of Llama-3 in C++. It's part 1 of what I intend to be a 3 part series, covering a naive C++ implementation, CPU optimization (blocked GEMM, vectorization, multithreading...), and GPU optimization (tiled GEMM/vectorized matmul kernel, flashattention kernel...).
+
+You can get the real weights [here](https://huggingface.co/meta-llama/Meta-Llama-3-8B) (about 15gb, BF16 safetensors, model-00001 to model-00004 + model.safetensors.index.json, behind an auth wall), and download them to ./weights/, or just run a small version with the --tiny flag. I've not implemented a tokenizer (I'm more interested in hardware opimization that running the full pipeline), so for now this implementation only supports token‑ID input and prints logits.
 
 To run:
 Compile with
@@ -11,6 +13,7 @@ g++ -std=c++17 -O2 -o llama_main src/*.cpp
 runtime flags: 
 --tiny
 runs the loop with placeholder matrices, with parameters specified in main.cpp
+
 optionally --tiny N to run the loop for N iterations (defaults to 1 if N ommited)
 
 
