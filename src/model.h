@@ -24,5 +24,6 @@ struct Llama {
 
     // forward diffusion 
     Tensor forward(int token, int pos, KVCache& cache);
+    Tensor forward_prefill(const Tensor& X_in, KVCache& cache);
     //outputs logits
 };

@@ -32,11 +32,13 @@ static void init_random_weights(Llama& model) {
 int main(int argc, char** argv) {
 
     bool use_tiny = false;
+    bool use_prefill = false;
 
     // default to 1 iteration
     int iters = 1;
+    int prefill_len = 0;
 
-    // parse arg for --tiny flag
+    // parse arg for flags
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--tiny") {
@@ -44,6 +46,9 @@ int main(int argc, char** argv) {
             if (i + 1 < argc && std::isdigit(argv[i + 1][0])) {
             iters = std::stoi(argv[++i]);
             }
+        } else if (arg == "--prefill" && i + 1 < argc) {
+            use_prefill = true;
+            prefill_len = std::stoi(argv[++i]);
         }
     }
 
@@ -62,18 +67,34 @@ int main(int argc, char** argv) {
             KVCache cache(conf);
             init_random_weights(model);
 
-            int token = 1;
-            int pos = 0;
-
-
             // intialize logits
             Tensor logits({conf.vocab_size});
 
-            // loop for {iters} iterations
-            for (int i = 0; i < iters; ++i) {
-                logits = model.forward(token, pos, cache);
+            // if ran with prefill flag, create a random vector of length T
+            if (use_prefill) {
+                int T = prefill_len; // from --prefill T
+                Tensor X({T, conf.dim});
+                std::mt19937 rng(123);
+                fill_tensor(X, rng);
+
+                logits = model.forward_prefill(X, cache);
+
+            } else { // run in decode mode
+
+                // the token we will predict on
+                int token = 1;
+                int pos = 0;
+
+
+
+                // loop for {iters} iterations
+                for (int i = 0; i < iters; ++i) {
+                    logits = model.forward(token, pos, cache);
+                }
             }
             
+            std::cout << "use_prefill: " << use_prefill << std::endl;
+            std::cout << "prefill_len: " << prefill_len << std::endl;
             std::cout << "Iters: " << iters << std::endl;
             std::cout << "Logits size: " << logits.data.size() << std::endl;
             std::cout << "First logits: ";
@@ -81,6 +102,7 @@ int main(int argc, char** argv) {
             if (static_cast<size_t>(to_print) > logits.data.size()) {
                 to_print = static_cast<int>(logits.data.size());
             }
+
             for (int i = 0; i < to_print; ++i) {
                 std::cout << std::fixed << std::setprecision(6) << logits.data[i];
                 if (i + 1 < to_print) {

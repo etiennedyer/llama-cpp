@@ -120,24 +120,24 @@ Tensor attention_impl(Tensor& Q, float* k_cache_layer, float* v_cache_layer, int
             scores[t] = score / sqrtf((float)dim);
         }
 
-        // --- Step B: Softmax ---
-        // 1. Find max for numerical stability
+        // softmax 
+        // find max for numerical stability
         float max_val = scores[0];
         for(int t=1; t<=pos; t++) if(scores[t] > max_val) max_val = scores[t];
 
-        // 2. Exp and Sum
+        // exp and sum
         float sum_exp = 0.0f;
         for (int t = 0; t <= pos; t++) {
             scores[t] = expf(scores[t] - max_val);
             sum_exp += scores[t];
         }
 
-        // 3. Normalize
+        // normalize
         for (int t = 0; t <= pos; t++) {
             scores[t] /= sum_exp;
         }
 
-        // --- Step C: Weighted Sum (Score @ V) ---
+        // Weighted Sum (Score @ V)
         // Get pointer to where we write the result
         float* out_vec = output.data.data() + (h * dim);
 
@@ -174,7 +174,7 @@ TransformerBlock::TransformerBlock(const LlamaConfig& conf) :
     // Output: [dim, dim]
     wo({conf.n_heads * conf.head_dim, conf.dim}),
 
-    // 2. FeedForward Weights
+    // 2. feedforward weights
     // Gate/Up: [dim, hidden_dim] (Expands the vector)
     w1({conf.dim, conf.hidden_dim}),
     w3({conf.dim, conf.hidden_dim}),
@@ -241,30 +241,241 @@ Tensor TransformerBlock::forward(Tensor x, int pos, const LlamaConfig& conf, con
     // Norm 2
     rms_norm_inplace(x_ffn, rms_ffn_weight);
 
-        // SwiGLU : w2( SiLU(w1(x)) * w3(x) )
-    // We need 3 matrix multiplications.
-    
-    // A. Calculate the two "Gate" paths
+    // SwiGLU : w2( SiLU(w1(x)) * w3(x) )
+    // calculate both "Gate" paths
     Tensor gate = matmul(x_ffn, w1); // shape: [dim, hidden_dim]
     Tensor up   = matmul(x_ffn, w3); // shape: [dim, hidden_dim]
 
-    // B. Apply SiLU Activation to the 'gate' (w1)
+    // apply SiLU Activation to the gate (w1)
     // SiLU(x) = x * sigmoid(x)
     for(int i=0; i<gate.data.size(); i++) {
         float val = gate.data[i];
         float sigmoid = 1.0f / (1.0f + expf(-val));
         gate.data[i] = val * sigmoid;
     }
-    // C. Element-wise Multiply (Gate * Up)
+    // element-wise Multiply (Gate * Up)
     // We can reuse 'gate' to store the result to save memory
     for(int i=0; i<gate.data.size(); i++) {
         gate.data[i] = gate.data[i] * up.data[i];
     }
 
-    // D. Final Projection (Down)
+    // final Projection (Down)
     Tensor ffn_out = matmul(gate, w2);
 
-    // 4. Second Residual Connection
+    // second Residual Connection
+    add_inplace(output, ffn_out);
+
+    return output;
+
+}
+
+// helper functions for 2D tensors
+
+// take the chunk of the hidden dim that corresponds to head h
+static Tensor slice_head_2d(const Tensor& X, int head, int head_dim) {
+    int T = X.shape[0];
+    int D = X.shape[1];
+    Tensor out({T, head_dim});
+    int offset = head * head_dim;
+
+    for (int t = 0; t < T; ++t) {
+        const float* src = &X.data[t * D + offset];
+        float* dst = &out.data[t * head_dim];
+        std::memcpy(dst, src, head_dim * sizeof(float));
+    }
+    return out;
+}
+
+// opposite, take a head slice and return it to the hidden dim
+static void scatter_head_2d(Tensor& X, const Tensor& head_out, int head, int head_dim) {
+    int T = X.shape[0];
+    int D = X.shape[1];
+    int offset = head * head_dim;
+    for (int t = 0; t < T; ++t) {
+        const float* src = &head_out.data[t * head_dim];
+        float* dst = &X.data[t * D + offset];
+        std::memcpy(dst, src, head_dim * sizeof(float));
+    }
+}
+
+// transpose
+static Tensor transpose_2d(const Tensor& A) {
+    int R = A.shape[0];
+    int C = A.shape[1];
+    Tensor AT({C, R});
+    for (int r = 0; r < R; ++r) {
+        for (int c = 0; c < C; ++c) {
+            AT.data[c * R + r] = A.data[r * C + c];
+        }
+    }
+    return AT;
+}
+
+// softmax with causal mask
+static void causal_softmax_inplace(Tensor& scores) {
+    int T = scores.shape[0];
+    int S = scores.shape[1]; // should be T
+    for (int i = 0; i < T; ++i) {
+        // mask: j > i => -inf
+        for (int j = i + 1; j < S; ++j) {
+            scores.data[i * S + j] = -1e9f;
+        }
+        // softmax row i
+        float max_val = scores.data[i * S + 0];
+        for (int j = 1; j <= i; ++j) {
+            float v = scores.data[i * S + j];
+            if (v > max_val) max_val = v;
+        }
+        float sum = 0.0f;
+        for (int j = 0; j <= i; ++j) {
+            float e = std::exp(scores.data[i * S + j] - max_val);
+            scores.data[i * S + j] = e;
+            sum += e;
+        }
+        float inv = 1.0f / sum;
+        for (int j = 0; j <= i; ++j) {
+            scores.data[i * S + j] *= inv;
+        }
+    }
+}
+
+
+// apply RoPE row-wise
+static void rope_row_inplace(float* q_row, float* k_row, int dim, int pos, const RoPE& rope) {
+    const float* cos_table = &rope.freqs_cos.data[pos * (rope.freqs_cos.shape[1])];
+    const float* sin_table = &rope.freqs_sin.data[pos * (rope.freqs_sin.shape[1])];
+
+    for (int i = 0; i < dim; i += 2) {
+        int idx = (i / 2) % rope.freqs_cos.shape[1];
+        float c = cos_table[idx];
+        float s = sin_table[idx];
+
+        float xq = q_row[i], yq = q_row[i+1];
+        q_row[i]   = xq * c - yq * s;
+        q_row[i+1] = xq * s + yq * c;
+
+        float xk = k_row[i], yk = k_row[i+1];
+        k_row[i]   = xk * c - yk * s;
+        k_row[i+1] = xk * s + yk * c;
+    }
+}
+
+Tensor TransformerBlock::forward_prefill(Tensor X, const LlamaConfig& conf, const RoPE& rope, KVCache& cache, int layer_idx) {
+    int T = X.shape[0];
+    int dim = conf.dim;
+    int head_dim = conf.head_dim;
+    int n_heads = conf.n_heads;
+    int n_kv_heads = conf.n_kv_heads;
+
+    Tensor X_norm = X; // copy so we don't lose the original x
+
+    // rms norm
+    rms_norm_inplace(X_norm, rms_att_weight);
+
+    // get K/Q/V
+    Tensor K = matmul(X_norm, wk);
+    Tensor V = matmul(X_norm, wv);
+    Tensor Q = matmul(X_norm, wq);
+
+    // write K/V to the cache
+    // get layer offset
+    size_t layer_offset = layer_idx * conf.seq_len * conf.n_kv_heads * conf.head_dim;
+
+    // clamp length of T
+    int T_cache = std::min(T, conf.seq_len);
+
+    // write to cache for each row 
+    for (int t = 0; t < T_cache; ++t) {
+        size_t pos_offset = t * conf.n_kv_heads * conf.head_dim;
+        size_t base_offset = layer_offset + pos_offset;
+
+        const float* k_row = &K.data[t * (conf.n_kv_heads * conf.head_dim)];
+        const float* v_row = &V.data[t * (conf.n_kv_heads * conf.head_dim)];
+
+        size_t mem_size = conf.n_kv_heads * conf.head_dim * sizeof(float);
+
+        //write to k cache
+        std::memcpy(cache.k_cache.data.data() + base_offset, k_row, mem_size);
+
+        // write to v cache
+        std::memcpy(cache.v_cache.data.data() + base_offset, v_row, mem_size);
+    }
+
+    // initialize empty attention output vector
+    Tensor attn_out({T, dim});
+    std::fill(attn_out.data.begin(), attn_out.data.end(), 0.0f);
+
+    // 2D attention
+    for (int h = 0; h < n_heads; ++h) {
+        int kv_head = h / (n_heads / n_kv_heads);
+
+        Tensor Q_h = slice_head_2d(Q, h, head_dim);
+        Tensor K_h = slice_head_2d(K, kv_head, head_dim);
+        Tensor V_h = slice_head_2d(V, kv_head, head_dim);
+
+        // apply RoPE on each row using head_dim (safe for GQA)
+        for (int t = 0; t < T; ++t) {
+            rope_row_inplace(&Q_h.data[t * head_dim], &K_h.data[t * head_dim], head_dim, t, rope);
+        }
+
+        // transpose K
+        Tensor K_T = transpose_2d(K_h);
+
+        // scores: [T, head_dim] @ [head_dim, T] -> [T, T]
+        Tensor scores = matmul(Q_h, K_T);
+
+        // scale
+        float scale = 1.0f / std::sqrt((float)head_dim);
+        for (float& v : scores.data) v *= scale;
+
+        // mask + softmax row-wise
+        causal_softmax_inplace(scores);
+
+        // head_out: [T, T] @ [T, head_dim] -> [T, head_dim]
+        Tensor head_out = matmul(scores, V_h);
+
+        scatter_head_2d(attn_out, head_out, h, head_dim);
+    }
+
+    // project with wo
+    Tensor output = matmul(attn_out, wo);
+
+    // 6. residuals
+    // Add the original input 'x' back to the result
+    add_inplace(output, X);
+
+    // 7. FFNN
+    
+    // Create a residual copy for the SECOND part
+    Tensor X_ffn = output; // Start with the result of attention
+
+    // Norm 2
+    rms_norm_inplace(X_ffn, rms_ffn_weight);
+
+    // SwiGLU
+    // w2( SiLU(w1(x)) * w3(x) )
+
+    // calculate both Gate paths
+    Tensor gate = matmul(X_ffn, w1); 
+    Tensor up = matmul(X_ffn, w3);
+
+    // apply SiLU Activation to the gate (w1)
+    // SiLU(x) = x * sigmoid(x)
+    for(int i=0; i<gate.data.size(); i++) {
+        float val = gate.data[i];
+        float sigmoid = 1.0f / (1.0f + expf(-val));
+        gate.data[i] = val * sigmoid;
+    }
+    // element-wise Multiply (Gate * Up)
+    // We can reuse 'gate' to store the result to save memory
+    for(int i=0; i<gate.data.size(); i++) {
+        gate.data[i] = gate.data[i] * up.data[i];
+    }
+
+    // final Projection (Down)
+    Tensor ffn_out = matmul(gate, w2);
+
+    // second Residual Connection
     add_inplace(output, ffn_out);
 
     return output;

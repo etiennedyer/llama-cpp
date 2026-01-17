@@ -1,25 +1,54 @@
 #include "tensor.h"
-#include <cmath>     // for sqrt, exp
-#include <stdexcept> // for throwing errors
+#include <cmath>
+#include <stdexcept> 
+#include <algorithm>
 
 // define matrix multiplication
-// Returns a new Tensor C = A @ B
+// returns a new Tensor C = A @ B
 Tensor matmul(const Tensor& A, const Tensor& B) {
 
-    // 1D x 2D: [K] @ [K, N] -> [N]
+    // [K] @ [K, N] -> [N]
+    // really it's (1, K) x (K, N) = (1, N), but these are tensors, so first vector is literally 1 dimensional
     if (A.shape.size() == 1 && B.shape.size() == 2) {
         int K = A.shape[0];
         int N = B.shape[1];
         if (K != B.shape[0]) {
             throw std::invalid_argument( "Dimension mismatch! A " + shape_str(A) + " B " + shape_str(B));
         }
+
+        // GEMV loop
+        // initialize output tensor
         Tensor C({N});
-        for (int j = 0; j < N; ++j) {
-            float sum = 0.0f;
-            for (int k = 0; k < K; ++k) {
-                sum += A.data[k] * B.data[k * N + j];
+
+        // size of tile
+        const int BN = 64;
+
+        // per-tile loop, which is why we increment by tile size
+        // e.g., without min, for a vector of length 100, we'd try to increment up to 128, which is OOB
+        for (int j0 = 0; j0 < N; j0 += BN) {
+
+            // take min in case our vector length is not a multiple of the tile size
+            int j_max = std::min(j0 + BN, N);
+
+            // initialize output tile
+            for (int j = j0; j < j_max; ++j) {
+                C.data[j] = 0.0f; 
             }
-            C.data[j] = sum;
+
+            // temporal reuse: A's entries show up repeatedly, so 
+            // we start by loading one and using it many times
+            for (int k = 0; k < K; ++k) {
+                const float a = A.data[k];
+
+                // get the address of the B row tile we're using
+                // we've gotten through k rows of size N, and we're on the j0th tile of that row
+                const float* b_row_tile = &B.data[k * N + j0];
+
+                //contiguous access: consume cache lines of B efficiently
+                for (int j = j0; j < j_max; ++j) {
+                    C.data[j] += a * b_row_tile[j - j0]; // start at B row tile 0 and increment to max
+                }
+            }
         }
         return C;
     }

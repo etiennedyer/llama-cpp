@@ -86,5 +86,7 @@ struct TransformerBlock {
     
     // The loop body: takes x, returns processed x
     Tensor forward(Tensor x, int pos, const LlamaConfig& conf, const RoPE& rope, KVCache& cache, int layer_idx); 
+
+    Tensor forward_prefill(Tensor X, const LlamaConfig& conf, const RoPE& rope, KVCache& cache, int layer_idx);
 };
 

@@ -38,6 +38,24 @@ Tensor Llama::forward(int token, int pos, KVCache& cache) {
     return logits;
 }
 
+Tensor Llama::forward_prefill(const Tensor& X_in, KVCache& cache) {
+    
+    Tensor X = X_in; // copy so we can modify
+
+    // loop over layers
+    for(int i = 0; i < conf.n_layers; i++) {
+        X = layers[i].forward_prefill(X, conf, rope, cache, i);
+    }
+
+    // final normalization
+    rms_norm_inplace(X, rms_final_weight);
+
+    // unembed
+    Tensor logits = matmul(X, w_cls); 
+
+    return logits;
+}
+
 void Llama::load_safetensors(const std::string& path) {
     SafeTensorsLoader loader(path);
 
