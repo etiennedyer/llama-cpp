@@ -222,14 +222,14 @@ for (int i0 = 0; i0 < M; i0 += BM) {
         for (int k0 = 0; k0 < K; k0 += BK) {
             int k_max = std::min(k0 + BK, K);
 
-            // iterate over rows of C
-            // in chunks of 64
+            // iterate over rows of C and A, in chunks of 64
+            // increases once we're through an entire block of B, or row of A
             for (int i = i0; i < i_max; ++i) {
                 float* c_row = C.data.data() + i * N + j0;
                 // j0 moves first, so we fix a row and increase the column
                 
-                // iterate over the elements of A / corresponding columns of B
-                // in chunks of 64
+                // iterate over the elements of A, and 
+                // corresponding rows of B in chunks of 64
                 for (int k = k0; k < k_max; ++k) {
 
                     const float a = A.data[i * K + k];
