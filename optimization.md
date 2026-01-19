@@ -10,7 +10,8 @@ g++ -std=c++17 -O3 -g -fno-omit-frame-pointer -o llama_main src/*.cpp
 perf stat -e cycles,instructions,cache-misses ./llama_main --tiny
 ```
 
-first version:
+Profiling the naive implementation:
+```console
 Performance counter stats for './llama_main --tiny 20':
 
 6,369,559,149    cycles                                                                
@@ -21,6 +22,7 @@ Performance counter stats for './llama_main --tiny 20':
 
 1.482653000 seconds user
 0.037016000 seconds sys
+```
 
 We're looking at instructions per cycle (IPC) and cache-misses per 1000 instructions (MPKI) to understand what's happening. IPC is pretty self-explanatory, it's the number of instructions the CPU is executing in once clock cycle. My processor runs at ~3.8GHz = 3.8 billion cycles per second, so a runtime of 1.52 seconds makes sense.
 
