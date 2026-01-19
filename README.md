@@ -1,5 +1,5 @@
 # Llama-3 8B in C++
-This is my implementation of Llama-3 in C++. It's part 2 of what I intend to be a 3 part series, covering a naive C++ implementation, optimization for CPU (blocked GEMM/GEMV, vectorization, multithreading...), and optimization for GPU (GEMM/vectorized matmul kernel, FlashAttention kernel...). You can find part 1 [here].
+This is my implementation of Llama-3 in C++. It started as a naive C++ implementation, I'm currently optimizing for CPU (blocked GEMM/GEMV, vectorization, multithreading...), and I will later be optimizing for GPU (GEMM/vectorized matmul kernel, FlashAttention kernel...). 
 
 You can get the real weights [here](https://huggingface.co/meta-llama/Meta-Llama-3-8B) (about 15gb, BF16 safetensors, model-00001 to model-00004 + model.safetensors.index.json, behind an auth wall), and download them to ./weights/, or just run a small version with the --tiny flag.
 
