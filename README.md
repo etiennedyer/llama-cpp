@@ -1,11 +1,13 @@
+## Llama-3 8B in C++
 This is my implementation of Llama-3 in C++. It's part 2 of what I intend to be a 3 part series, covering a naive C++ implementation, optimization for CPU (blocked GEMM/GEMV, vectorization, multithreading...), and optimization for GPU (GEMM/vectorized matmul kernel, FlashAttention kernel...). You can find part 1 [here].
 
 You can get the real weights [here](https://huggingface.co/meta-llama/Meta-Llama-3-8B) (about 15gb, BF16 safetensors, model-00001 to model-00004 + model.safetensors.index.json, behind an auth wall), and download them to ./weights/, or just run a small version with the --tiny flag.
 
 You can read about how I'm optimizing it [here](https://github.com/etiennedyer/llama-cpp/optimization.md). The writeup serves as a good intro to tiled GEMV if you aren't familiar with the concept.
 
-## Repo structure
+# Repo structure
 
+```text
 ├── README.md
 ├── optimization.md     // optimization writeup
 ├── src
@@ -19,9 +21,9 @@ You can read about how I'm optimizing it [here](https://github.com/etiennedyer/l
 │   ├── tensor.cpp      // tensor class, matmul (GEMM/GEMV)
 │   └── tensor.h
 └── weights             // empty, fill with Llama-3 8B weights
+```
 
-
-## Running
+# Running
 
 To run:
 Compile with
@@ -52,7 +54,7 @@ to run the loop for N iterations (defaults to 1 if N ommited)
 ```
 run in prefill mode with random prefill of size T. Only available in tiny mode
 
-## Thoughts on implementation
+# Thoughts on implementation
 
 Overall, this was more straightforward than I expected. The main implementation challenge I ran into was managing the KV cache. I initially planned on just using matmul for the multiplication attention step (i.e., Q @ K.T), but realized that this is inefficient because of the way we actually construct the cache. My mental model was that we'd start with a small K/V cache and append the new K/V to the existing cache tensor. But this is in fact very inneficient, because we'd need to copy all the old data to a new address in memory each time.
 
