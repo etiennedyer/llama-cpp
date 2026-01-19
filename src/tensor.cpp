@@ -53,40 +53,79 @@ Tensor matmul(const Tensor& A, const Tensor& B) {
         return C;
     }
     
-    // Validation: Are we multiplying compatible shapes?
+    // GEMM loop
+
     if (A.shape.size() == 2 && B.shape.size() == 2) { // a 2D tensor is a matrix. A.shape will return the dimension of A (e.g., 3x4 = (3, 4))
 
         // make sure 2x2 matmul is valid
         if (A.shape[1] != B.shape[0]) {
             std::cout << "A.shape[1]: " << A.shape[1] << ", A.shape[0]: " << A.shape[0] << std::endl;
-            throw std::invalid_argument( "blahhh Dimension mismatch! A " + shape_str(A) + " B " + shape_str(B));
+            throw std::invalid_argument( "Dimension mismatch! A " + shape_str(A) + " B " + shape_str(B));
         }
 
         int M = A.shape[0]; // Rows of A
         int K = A.shape[1]; // Cols of A (and Rows of B)
         int N = B.shape[1]; // Cols of B
 
-        Tensor C({M, N}); // initialize an M x N tensor named C
+        Tensor C({M, N}); // initialize C, an M x N tensor
+        std::fill(C.data.begin(), C.data.end(), 0.0f);
 
-        // Naive Triple Loop (O(N^3))
-        for (int i = 0; i < M; i++) {           // Iterate over rows of A
-            for (int j = 0; j < N; j++) {       // Iterate over cols of B
-                
-                float sum = 0.0f;
-                for (int k = 0; k < K; k++) {   // Dot product reduction
-                    // A[i, k] * B[k, j]
-                    // We use flattened indices: index = row * total_cols + col
-                    sum += A.data[i * K + k] * B.data[k * N + j];
+        // block sizes
+        const int BM = 64;
+        const int BN = 64;
+        const int BK = 64;
+
+        // matrices are stored row-major
+        // A_{i,k} := A[i*K + k]
+
+        // index for rows of A/C
+        for (int i0 = 0; i0 < M; i0 += BM) {
+            int i_max = std::min(i0 + BM, M);
+
+            // index for columns of B/C
+            // having this before k0 means we try to keep C in memory 
+            // while 
+            for (int j0 = 0; j0 < N; j0 += BN) {
+                int j_max = std::min(j0 + BN, N);
+
+                // block index
+                // sets the row / column index of a block within A and B
+                for (int k0 = 0; k0 < K; k0 += BK) {
+                    int k_max = std::min(k0 + BK, K);
+
+                    // iterate over rows of C
+                    // in chunks of 64
+                    for (int i = i0; i < i_max; ++i) {
+                        float* c_row = C.data.data() + i * N + j0;
+                        // j0 moves first, so we fix a row and increase the column
+                        
+                        // iterate over the elements of A / corresponding columns of B
+                        // in chunks of 64
+                        for (int k = k0; k < k_max; ++k) {
+
+                            const float a = A.data[i * K + k];
+                            // as k increases, move along the row of A
+                            // as i increases, move to a new row
+                            
+                            const float* b_row = B.data.data() + k * N + j0;
+                            // as j0 increases, move along the row of B
+                            // as k increases, move along the column
+                            // k moves first, so we fix a column and increase the row
+                            // go for BK = 64 rows, then new column
+
+                            // use a scalar in the stored row of A 
+                            // while we move through a row of B and C
+                            for (int j = j0; j < j_max; ++j) {
+                                c_row[j - j0] += a * b_row[j - j0];
+                            }
+                        }
+                    }
                 }
-                
-                C.data[i * N + j] = sum; // modify the data vector that exists within C
             }
         }
 
         return C;
-    } else {
-        throw std::invalid_argument("Matmul only supports 1D/2D tensors for now.");
-    }
+    } else { throw std::invalid_argument("Matmul only supports 1D/2D tensors for now."); }
 }
 
 // add B to A

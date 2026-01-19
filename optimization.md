@@ -48,9 +48,8 @@ In general, IPC is what we're trying to optimize, and cache misses are one indic
 
 We have lots of cache misses, so we'll start by fixing that. We will start by creating a tiled (or blocked) matrix multiplication. The idea behind tiled matmul is that there’s a lot of data that we reuse can between computations, so we can design our matrix multiplication to use the data we've already fetched (in different ways), instead of blindly grabbing whatever data we need for the next computation. 
 
+## GEMV
 There are two main ideas in tiling: spatial locality (using *all* data the CPU has filled the cache with) and temporal locality (keeping the data we'll be using again soon cached). There are also two main kinds of matrix multiplication a LLM does: matrix by matrix, and vector by matrix. It does the former when it is processing an input (i.e., building the KV cache from a prompt), and the latter when it is generating an output (i.e., responding to your prompt).
-
-It so happens that spatial locality is more useful for generating outputs, and temporal locality for processing inputs. Let's look at examples of matrix multiplication to illustrate why.
 
 We'll start with vector-matrix multiplication. Let's look at a toy example, where A is a 1 x 26 row vector, A = [a, b, ..., z], and B is a matrix of dimension 26 x 2, B = [1, 27] // [2, 28] // ... // [26, 52]. We want to calculate A * B = C, a 1 x 2 row vector.
 
@@ -120,38 +119,131 @@ MPKI ≈ 72,395,863 / 4,055,702,234 * 1000 ≈ 12.8 (down from ~29)
 
 So: higher IPC and much lower MPKI tell us we've got better cache behavior, exactly what we wanted from the tiled GEMV.
 
-For 2x2 multiplication / prefill
+## GEMM
+We'll now look at what's happening when we do 2x2 multiplication during prefill. (During single-token decoding, Q, the "Query" component of your token embedding, represents only the vector you're currently predicting on, so Q @ K_T is a vector-matrix multiplication. When you're doing prefill, you're processing the "Query" components of the entire prompt, i.e., one vector per token, which get consolidated into a matrix, so Q @ K_T is a matrix-matrix multiplication.)
+
 ```console
 perf stat -e cycles,instructions,cache-misses ./llama_main --tiny 20 --prefill 120
 ```
 
+```console
+Performance counter stats for './llama_main --tiny 20 --prefill 120':
+
+22,539,729,531      cycles                                                                
+21,331,208,904      instructions                     #    0.95  insn per cycle            
+160,628,103      cache-misses                                                          
+
+5.354763764 seconds time elapsed
+
+5.312370000 seconds user
+0.042002000 seconds sys
+```
+
+Back to below 1 IPC, which is expected, since we're now using our naive algorithm to do 2x2 matmul.
+
+As we did above, we'll create a toy example to illustrate the core ideas. (That being said, GEMM is a little more complicated than GEMV. It certainly took me longer to wrap my head around it.)
+
+Say we want to do a 4x4 matmul. To simplify things a little, we’ll assume our fast memory can store 16 floats, and cache lines contain 4 floats. We’ll start by storing A and C in row-major format, then B in column-major format, so our cache lines efficiently retrieve data. (This changes though, so pay attention!)
+
+The worst-case scenario, with no data reuse, requires 16 operations (1 per entry of C), with 3 retrievals each (1 row of A + 1 column of B + 1 row or column from C) = 48 retrievals. Note that this never really happens, because even a naive algorithm will end up accidentally reusing data — the data isn’t evicted from fast memory until something else needs to come up.
+
+Let’s look at how data often naturally ends up being reused: we can compute our sums along a single row of C, in order to reuse the rows of A and C we’ve already loaded. This brings us down to 1 (row of A) + 4 (columns of B) + 1 (row of C) = 6 retrievals per row of C, of which we have 4, so 24 retrievals total.
+
+We've been reusing the first row of A and C, which is helpful, but we'd like to reuse columns of B as well.  To do this, we’ll need another row of A — if we load the second row of A, that allows us to calculate C[2, 1] as well. Now we’ll store C as column-major to update 2x1 tiles.
+
+That’s 2 (rows of A) + 1 ( column of B) + 1 (column of C) = 4 retrievals, and our 16-float cache is full.
+
+We’ll calculate C by iterating over columns, to reuse our 2 rows of A. To calculate 2 rows of C, we load 1 x 2 rows of A, 4 x 1 columns of B, and 4x1 column of C = 10 retrievals. We do this twice to calculate all four rows, so we have 20 retrievals.
+
+Now, we’re calculating 2 elements at once, but if we added another column of B, we could calculate 4. Unfortunately, our cache is already full. But notice we aren’t using it as well as we could be: we use full rows of A, but only half of the B column and half of the C column. Let’s pretend we can add a second column of B, then see how we can use our cache more efficiently so it fits.
+
+The first thing we notice that we don't need to calculate an entire element of C at once. Take for instance:
+c11 = a11 * b11 + a12 * b21 + a13 * b31 + a14 * b41. 
+
+We could easily do this in two passes: 
+c11 = a11 * b11 + a12 * b21, 
+c11 += a13 * b31 + a14 * b41
+
+We also wanted to calculate c12, which becomes:
+c12 = a11 * b12 + a12 * b22, 
+c12 += a13 * b32 + a14 * b42
+
+Similar for c21 and c22.
+
+Notice what data we’re using: in the first pass, we only need a11, a12, a21, a22 from A , b11, b21, b12, b22 from B, and c11, c12, c21, c22 from C. (In each case, this is the top-left 2x2 sub-matrix / quadrant.) This is only 12 floats, but they’re across different rows/columns, so how do we retrieve them efficiently? This is where we introduce matrix packing: we can store our matrix so that 1 cached line = 1 quadrant / 2x2 sub-matrix.
+
+Now, let’s think about how we reuse our cached data. If you go to the matmul visualizer tool and hover over C, you’ll notice the first pass over C only uses the left half of A, and the top half of B. We’ll use our 4 extra floats in memory to keep one of these “hot” while we change out the other. We’ll keep B hot and swap out A tiles, but we could have do 
+
+1st pass:
+Load A_TL, B_TL B_TR, C_TL. (+ 4 retrievals)
+1. C_TL: use A_TL with B_TL.
+
+2. C_TR: A_TL is also used with B_TR for C_TR, so we swap C_TL for C_TR. (+1)
+
+3. C_BR: B_TR is also used for C_BR, so swap A_TL for A_BL, and C_TR for C_BR (+2)
+
+4. B_TL is also used with A_BL for C_BL so swap C_BR for C_BL (+1)
+
+2nd pass:
+Load A_TR, B_BL B_BR, C_TL. (+ 4 retrievals)
+1. C_TL: A_TR, B_BL       
+
+2. C_TR: A_TR is also used with B_BR for C_TR, so we swap C_TL for C_TR. (+1)     
+
+3. C_BR: B_BR is also used for C_BR, so swap A_TR for A_BR, and C_TR for C_BR. (+2)     
+
+4. C_BL: B_BL is also used with A_BR for C_BL so swap C_BR for C_BL. (+1)
+
+Total: 16 retrievals.
+
+Note: we did not count the cost of writebacks here.  If you look at our first pass, when C_TL is read at step 1, it has value 0. In step 2, when it is replaced by C_TR, it has value A_TL x B_TL, so the CPU needs to go change its stored value in slow memory. (This only happens for C tiles, because we change their values — if we swap out a tile of A, its value hasn’t changed, so we don’t need to perform a write operation). If we added the cost of writebacks (8 in total), we’d be back to 24 read/write operations (not interchangeable, but close enough for this toy model ). I chose to ommit them here for illustrative purposes, because in real GEMM kernels you try hard to avoid repeatedly evicting partially-accumulated C like this by keeping tiles of C in cache until both passes are done—then you only need to pay one load + one store per C tile, not two rounds of load/evict. We could have done that here, but we would have had to reload B more often.
+
 ```cpp
+// block sizes
+const int BM = 64;
+const int BN = 64;
+const int BK = 64;
 
-const int BM = 64, BN = 64, BK = 64;
-
-// matrices are stored row-major as
+// matrices are stored row-major
 // A_{i,k} := A[i*K + k]
+
+// index for rows of A/C
 for (int i0 = 0; i0 < M; i0 += BM) {
-    for (int k0 = 0; k0 < K; k0 += BK) {
-        for (int j0 = 0; j0 < N; j0 += BN) {
-            int i_max = std::min(i0 + BM, M);
+    int i_max = std::min(i0 + BM, M);
+
+    // index for columns of B/C
+    // having this before k0 means we try to keep C in memory 
+    // while 
+    for (int j0 = 0; j0 < N; j0 += BN) {
+        int j_max = std::min(j0 + BN, N);
+
+        // block index
+        // sets the row / column index of a block within A and B
+        for (int k0 = 0; k0 < K; k0 += BK) {
             int k_max = std::min(k0 + BK, K);
-            int j_max = std::min(j0 + BN, N);
 
-            // i goes from i0 to i0 + BM (~0-64)
+            // iterate over rows of C
+            // in chunks of 64
             for (int i = i0; i < i_max; ++i) {
-
-                // k goes from k0 to k0 + BK (~0-64)
+                float* c_row = C.data.data() + i * N + j0;
+                // j0 moves first, so we fix a row and increase the column
+                
+                // iterate over the elements of A / corresponding columns of B
+                // in chunks of 64
                 for (int k = k0; k < k_max; ++k) {
 
-                    // select an entry in the current A block
-                    float a = A[i*K + k];
+                    const float a = A.data[i * K + k];
+                    // as k increases, move along the row of A
+                    // as i increases, move to a new row
+                    
+                    const float* b_row = B.data.data() + k * N + j0;
+                    // as j0 increases, move along the row of B
+                    // as k increases, move along the column
+                    // k moves first, so we fix a column and increase the row
+                    // go for BK = 64 rows, then new column
 
-                    // addresses for 
-                    const float* b_row = &B[k*N + j0];
-                    float* c_row = &C[i*N + j0];
-
-                    //
+                    // use a scalar in the stored row of A 
+                    // while we move through a row of B and C
                     for (int j = j0; j < j_max; ++j) {
                         c_row[j - j0] += a * b_row[j - j0];
                     }
@@ -161,4 +253,20 @@ for (int i0 = 0; i0 < M; i0 += BM) {
     }
 }
 
+
+```
+
+And the results:
+
+```console
+Performance counter stats for './llama_main --tiny 20 --prefill 120':
+
+4,232,648,210      cycles                                                                
+10,415,230,319      instructions                     #    2.46  insn per cycle            
+12,703,123      cache-misses                                                          
+
+1.018330668 seconds time elapsed
+
+0.968222000 seconds user
+0.050011000 seconds sys
 ```
