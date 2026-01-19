@@ -3,7 +3,7 @@ This is my implementation of Llama-3 in C++. It started as a naive C++ implement
 
 You can get the real weights [here](https://huggingface.co/meta-llama/Meta-Llama-3-8B) (about 15gb, BF16 safetensors, model-00001 to model-00004 + model.safetensors.index.json, behind an auth wall), and download them to ./weights/, or just run a small version with the --tiny flag.
 
-You can read about how I'm optimizing it [here](https://github.com/etiennedyer/llama-cpp/optimization.md). The writeup serves as a good intro to tiled GEMV if you aren't familiar with the concept.
+You can read about how I'm optimizing it [here](https://github.com/etiennedyer/llama-cpp/blob/master/optimization.md). The writeup serves as a good intro to tiled GEMV if you aren't familiar with the concept.
 
 ## Repo structure
 
