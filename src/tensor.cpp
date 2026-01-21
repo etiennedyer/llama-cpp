@@ -131,7 +131,8 @@ Tensor matmul(const Tensor& A, const Tensor& B) {
                             const float a = A.data[i * K + k];
                             // as k increases, move along the row of A (i.e., increase column)
                             // as i increases, move to a new row
-                            
+
+                            __m256 a8 = _mm256_set1_ps(a);
                             const float* b_row = B.data.data() + k * N + j0;
                             // as j0 increases, move to the next column-block of B 
                             // (i.e., row stays the same, but) you're touching different columns
@@ -139,12 +140,13 @@ Tensor matmul(const Tensor& A, const Tensor& B) {
                             // k moves faster, so we fix a column and increase the row
                             // go for BK = 64 rows, then new block
 
+
                             int j = j0;
                             // use a scalar in the stored row of A 
                             // while we move through columns of a row of B and C
                             // vectorize to go 8 spots at a time
                             for (; j + 8 <= j_max; j+=8) {
-                                fma_row_update_8(a, b_row + (j - j0), c_row + (j - j0));
+                                fma_row_update_8(a8, b_row + (j - j0), c_row + (j - j0));
                             }
                             
                             // finish up what isn't a multiple of 8
@@ -154,8 +156,6 @@ Tensor matmul(const Tensor& A, const Tensor& B) {
                         }
                     }
                 }
-                
-                C.data[i * N + j] = sum; // modify the data vector that exists within C
             }
         }
 

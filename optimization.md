@@ -268,3 +268,59 @@ for (int i0 = 0; i0 < M; i0 += BM) {
 ## Vectorization
 
 The fundamental idea behind the current AI boom is vectorization. When you're doing matrix multiplication, the entries of your output can be calculated fully independently, so you're free to do them in any order you like... or even at the same time. The code we've written so far does not use that at all: if you look at the innermost loop of our GEMM algorithm, we do one multiplication per cycle. My CPU, the Intel i5-7600K has two 128-bit SIMD lanes, meaning I can perform 8 operations involving 32-bit floats in parallel. 
+
+```cpp
+// vectorized multiplication helper
+static inline void fma_row_update_8(__m256 a8, const float* b, float* c) {
+
+    // load 8 floats from B
+    // b8 = [b[0], b[1], ..., b[7]]
+    __m256 b8 = _mm256_loadu_ps(b);
+
+    // load 8 floats from C
+    __m256 c8 = _mm256_loadu_ps(c);
+
+    // fused multiply-add
+    // c8[i] = a8[i] * b8[i] + c8[i]
+    c8 = _mm256_fmadd_ps(a8, b8, c8);
+
+    // store updated values back to C
+    _mm256_storeu_ps(c, c8);
+}
+```
+
+```cpp
+for (int k = k0; k < k_max; ++k) {
+
+    const float a = A.data[i * K + k];
+
+    __m256 a8 = _mm256_set1_ps(a);
+    const float* b_row = B.data.data() + k * N + j0;
+
+    int j = j0;
+    // use a scalar in the stored row of A 
+    // while we move through columns of a row of B and C
+    // vectorize to go 8 spots at a time
+    for (; j + 8 <= j_max; j+=8) {
+        fma_row_update_8(a8, b_row + (j - j0), c_row + (j - j0));
+    }
+
+    // finish up what isn't a multiple of 8
+    for (; j < j_max; ++j) {
+        c_row[j - j0] += a * b_row[j - j0];
+    }
+}
+```
+
+```console
+Performance counter stats for './llama_main --tiny 20 --prefill 120':
+
+3,439,443,967      cycles                                                                
+7,007,935,038      instructions                     #    2.04  insn per cycle            
+12,825,163      cache-misses                                                          
+
+0.821737072 seconds time elapsed
+
+0.781599000 seconds user
+0.040082000 seconds sys
+```
