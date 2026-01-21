@@ -2,6 +2,24 @@
 #include <cmath>
 #include <stdexcept> 
 #include <algorithm>
+#include <immintrin.h>
+
+static inline void fma_row_update_8(__m256 a8, const float* b, float* c) {
+
+    // load 8 floats from B
+    // b8 = [b[0], b[1], ..., b[7]]
+    __m256 b8 = _mm256_loadu_ps(b);
+
+    // load 8 floats from C
+    __m256 c8 = _mm256_loadu_ps(c);
+
+    // fused multiply-add
+    // c8[i] = a8[i] * b8[i] + c8[i]
+    c8 = _mm256_fmadd_ps(a8, b8, c8);
+
+    // store updated values back to C
+    _mm256_storeu_ps(c, c8);
+}
 
 // define matrix multiplication
 // returns a new Tensor C = A @ B
@@ -66,17 +84,74 @@ Tensor matmul(const Tensor& A, const Tensor& B) {
         int K = A.shape[1]; // Cols of A (and Rows of B)
         int N = B.shape[1]; // Cols of B
 
-        Tensor C({M, N}); // initialize an M x N tensor named C
+        Tensor C({M, N}); // initialize C, an M x N tensor
+        std::fill(C.data.begin(), C.data.end(), 0.0f);
 
-        // Naive Triple Loop (O(N^3))
-        for (int i = 0; i < M; i++) {           // Iterate over rows of A
-            for (int j = 0; j < N; j++) {       // Iterate over cols of B
-                
-                float sum = 0.0f;
-                for (int k = 0; k < K; k++) {   // Dot product reduction
-                    // A[i, k] * B[k, j]
-                    // We use flattened indices: index = row * total_cols + col
-                    sum += A.data[i * K + k] * B.data[k * N + j];
+        // block sizes
+        const int BM = 64;
+        const int BN = 64;
+        const int BK = 64;
+
+        // index for blocks of A/C
+        // controls rows of A and C
+        // i0 changes -> C and A row-tiles change.
+        for (int i0 = 0; i0 < M; i0 += BM) {
+            int i_max = std::min(i0 + BM, M);
+
+            // index for blocks of B/C
+            // controls columns of B and C
+            // j0 changes -> C and B column-tiles change.
+            for (int j0 = 0; j0 < N; j0 += BN) {
+                int j_max = std::min(j0 + BN, N);
+
+                // index for blocks of A/B
+                // controls rows of B, columns of A
+                // k0 changes -> A and B tiles change, C tile stays the same.
+                for (int k0 = 0; k0 < K; k0 += BK) {
+                    int k_max = std::min(k0 + BK, K);
+                    // this order keeps C hot:
+                    // because i0 and j0 are the outermost loops,
+                    // with (i0, j0) fixed, we iterate k0 and keep accumulating into the same C tile.
+                    // This tends to reduce C reloads/writebacks compared to loop orders that revisit a C tile once per k0.
+
+                    // for this kind of memory layout, you don't want i0 inside
+                    // because then C can get fully evicted, meaning more writebacks
+
+                    for (int i = i0; i < i_max; ++i) {
+                        // iterate over rows of C
+                        // in chunks of 64
+                        float* c_row = C.data.data() + i * N + j0; // matrices are stored row-major, A_{i,k} := A[i*K + k]
+                        // as i increases, move to a new row of C
+                        // as j0 increases, move to a new block of columns
+                        
+                        // iterate over the k (columns of of A / corresponding rows of B) in chunks of 64
+                        for (int k = k0; k < k_max; ++k) {
+
+                            const float a = A.data[i * K + k];
+                            // as k increases, move along the row of A (i.e., increase column)
+                            // as i increases, move to a new row
+                            
+                            const float* b_row = B.data.data() + k * N + j0;
+                            // as j0 increases, move to the next column-block of B 
+                            // (i.e., row stays the same, but) you're touching different columns
+                            // as k increases, move to a new row (stride N)
+                            // k moves faster, so we fix a column and increase the row
+                            // go for BK = 64 rows, then new block
+
+                            int j = j0;
+                            // use a scalar in the stored row of A 
+                            // while we move through columns of a row of B and C
+                            // vectorize to go 8 spots at a time
+                            for (; j + 8 <= j_max; j+=8) {
+                                fma_row_update_8(a, b_row + (j - j0), c_row + (j - j0));
+                            }
+                            
+                            // finish up what isn't a multiple of 8
+                            for (; j < j_max; ++j) {
+                                c_row[j - j0] += a * b_row[j - j0];
+                            }
+                        }
+                    }
                 }
                 
                 C.data[i * N + j] = sum; // modify the data vector that exists within C
