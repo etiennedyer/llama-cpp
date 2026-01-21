@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <immintrin.h>
 
+// vectorized multiplication helper
 static inline void fma_row_update_8(__m256 a8, const float* b, float* c) {
 
     // load 8 floats from B
