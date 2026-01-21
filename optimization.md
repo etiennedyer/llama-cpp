@@ -267,4 +267,4 @@ for (int i0 = 0; i0 < M; i0 += BM) {
 
 ## Vectorization
 
-The fundamental idea behind the current AI boom is vectorization. that entry #21 of your output does not depend on entry #2, so you're free to do them in any order you like... or even at the same time. The code we've written so far does not use that at all: if you look at the innermost loop of our GEMM algorithm, we do one multiplication per cycle. My CPU, the Intel i5-7600K has two 128-bit SIMD lanes, meaning I can perform 8 operations involving 32-bit floats in parallel. The basic implementation of this is actually very easy: Intel has
+The fundamental idea behind the current AI boom is vectorization. When you're doing matrix multiplication, the entries of your output can be calculated fully independently, so you're free to do them in any order you like... or even at the same time. The code we've written so far does not use that at all: if you look at the innermost loop of our GEMM algorithm, we do one multiplication per cycle. My CPU, the Intel i5-7600K has two 128-bit SIMD lanes, meaning I can perform 8 operations involving 32-bit floats in parallel. 
