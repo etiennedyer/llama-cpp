@@ -77,15 +77,16 @@ int main(int argc, char** argv) {
                 std::mt19937 rng(123);
                 fill_tensor(X, rng);
 
-                logits = model.forward_prefill(X, cache);
+                for (int i = 0; i < iters; ++i) {
+                    logits = model.forward_prefill(X, cache);
+                }
+                
 
             } else { // run in decode mode
 
                 // the token we will predict on
                 int token = 1;
                 int pos = 0;
-
-
 
                 // loop for {iters} iterations
                 for (int i = 0; i < iters; ++i) {

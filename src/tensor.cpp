@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <immintrin.h>
 
+
 // vectorized multiplication helper
 static inline void fma_row_update_8(__m256 a8, const float* b, float* c) {
 
@@ -21,6 +22,7 @@ static inline void fma_row_update_8(__m256 a8, const float* b, float* c) {
     // store updated values back to C
     _mm256_storeu_ps(c, c8);
 }
+
 
 // define matrix multiplication
 // returns a new Tensor C = A @ B
@@ -132,7 +134,8 @@ Tensor matmul(const Tensor& A, const Tensor& B) {
                             // as k increases, move along the row of A (i.e., increase column)
                             // as i increases, move to a new row
 
-                            __m256 a8 = _mm256_set1_ps(a);
+                            __m256 a8 = _mm256_set1_ps(a); // load register with values of a
+
                             const float* b_row = B.data.data() + k * N + j0;
                             // as j0 increases, move to the next column-block of B 
                             // (i.e., row stays the same, but) you're touching different columns
@@ -140,7 +143,12 @@ Tensor matmul(const Tensor& A, const Tensor& B) {
                             // k moves faster, so we fix a column and increase the row
                             // go for BK = 64 rows, then new block
 
-
+                            /* non-vectorized loop
+                            for (int j = j0; j < j_max; ++j) {
+                                c_row[j - j0] += a * b_row[j - j0];
+                            }
+                            */
+                            
                             int j = j0;
                             // use a scalar in the stored row of A 
                             // while we move through columns of a row of B and C
@@ -153,6 +161,7 @@ Tensor matmul(const Tensor& A, const Tensor& B) {
                             for (; j < j_max; ++j) {
                                 c_row[j - j0] += a * b_row[j - j0];
                             }
+                            
                         }
                     }
                 }
